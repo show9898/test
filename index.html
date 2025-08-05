@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Code Scanner</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
+        body { background: #f5f5f5; padding: 20px; }
+        .container { max-width: 500px; margin: 20px auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); text-align: center; }
+        h1 { color: #2c3e50; margin-bottom: 20px; }
+        #scanner-container { margin: 20px auto; position: relative; width: 300px; height: 300px; border: 2px solid #3498db; border-radius: 5px; overflow: hidden; background: #f0f0f0; display: flex; justify-content: center; align-items: center; }
+        #scanner-video { width: 100%; height: 100%; object-fit: cover; display: none; }
+        #scanner-canvas { display: none; }
+        #scan-result { margin-top: 15px; padding: 10px; background: #f0f0f0; border-radius: 5px; min-height: 60px; }
+        button { color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; transition: background 0.3s; margin-top: 15px; }
+        .scan-btn { background: #3498db; }
+        .scan-btn:hover { background: #2980b9; }
+        .stop-btn { background: #f44336; }
+        .stop-btn:hover { background: #d32f2f; }
+        .permission-help { margin-top: 20px; padding: 15px; background: #fff8e1; border-radius: 5px; text-align: left; display: none; }
+        .camera-icon { font-size: 50px; margin-bottom: 10px; color: #757575; }
+        @media (max-width: 768px) {
+            #scanner-container { width: 250px; height: 250px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>QR Code Scanner</h1>
+        <p>Scan attendee's registration QR code to mark them as present</p>
+        
+        <div id="scanner-container">
+            <div id="scanner-placeholder">
+                <div class="camera-icon">📷</div>
+                <p>Camera access required</p>
+            </div>
+            <video id="scanner-video" playsinline></video>
+            <canvas id="scanner-canvas"></canvas>
+        </div>
+        
+        <div id="scan-result">Click "Start Scanner" to begin</div>
+        
+        <button id="startBtn" class="scan-btn" onclick="startScanner()">Start Scanner</button>
+        <button id="stopBtn" class="stop-btn" onclick="stopScanner()" disabled>Stop Scanner</button>
+        
+        <div id="permissionHelp" class="permission-help">
+            <h3>Having camera permission issues?</h3>
+            <p><strong>If you denied camera access by mistake:</strong></p>
+            <ul>
+                <li><strong>Chrome (Android):</strong> Tap the lock icon in the address bar → Site settings → Camera → Allow</li>
+                <li><strong>Safari (iPhone):</strong> Go to Settings → Safari → Camera → Allow for this site</li>
+            </ul>
+            <p>Refresh the page after changing permissions.</p>
+        </div>
+    </div>
+
+    <script>
+        // Firebase config
+        const firebaseConfig = {
+            apiKey: "AIzaSyBbyuHkRdpbtcWiI1yTkZLlEl63X6dVn_g",
+            authDomain: "uttarakhand-photo-fair-94e82.firebaseapp.com",
+            databaseURL: "https://uttarakhand-photo-fair-94e82-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "uttarakhand-photo-fair-94e82",
+            storageBucket: "uttarakhand-photo-fair-94e82.firebasestorage.app",
+            messagingSenderId: "194956900843",
+            appId: "1:194956900843:web:aed389e21cacd0e1f7c1ae",
+            measurementId: "G-1H3N81R6WW"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const database = firebase.database();
+
+        let scannerInterval;
+        let videoStream;
+        let allRegistrations = [];
+        
+        // Load registration data
+        database.ref('registrations').on('value', (snapshot) => {
+            const data = snapshot.val() || {};
+            allRegistrations = Object.values(data);
+        });
+
+        function startScanner() {
+            const video = document.getElementById('scanner-video');
+            const canvas = document.getElementById('scanner-canvas');
+            const context = canvas.getContext('2d');
+            const resultDiv = document.getElementById('scan-result');
+            const placeholder = document.getElementById('scanner-placeholder');
+            const permissionHelp = document.getElementById('permission-help');
+            
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+            resultDiv.textContent = 'Initializing scanner...';
+            
+            // Hide placeholder and show video
+            placeholder.style.display = 'none';
+            video.style.display = 'block';
+            
+            navigator.mediaDevices.getUserMedia({ 
+                video: { 
+                    facingMode: "environment",
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                } 
+            })
+            .then(function(stream) {
+                videoStream = stream;
+                video.srcObject = stream;
+                video.play();
+                
+                resultDiv.textContent = 'Scanning for QR codes...';
+                
+                scannerInterval = setInterval(() => {
+                    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                        
+                        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+                        const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                            inversionAttempts: "dontInvert",
+                        });
+                        
+                        if (code) {
+                            processScannedCode(code.data);
+                        }
+                    }
+                }, 200);
+            })
+            .catch(function(err) {
+                console.error('Camera error:', err);
+                placeholder.style.display = 'flex';
+                video.style.display = 'none';
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('stopBtn').disabled = true;
+                
+                if (err.name === 'NotAllowedError') {
+                    resultDiv.innerHTML = `<span style="color: #e74c3c;">Camera access denied. Please allow camera permissions.</span>`;
+                    document.getElementById('permission-help').style.display = 'block';
+                } else if (err.name === 'NotFoundError') {
+                    resultDiv.innerHTML = `<span style="color: #e74c3c;">No camera found on this device.</span>`;
+                } else {
+                    resultDiv.innerHTML = `<span style="color: #e74c3c;">Error accessing camera: ${err.message}</span>`;
+                }
+            });
+        }
+
+        function stopScanner() {
+            clearInterval(scannerInterval);
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+            }
+            
+            const video = document.getElementById('scanner-video');
+            const placeholder = document.getElementById('scanner-placeholder');
+            
+            video.srcObject = null;
+            video.style.display = 'none';
+            placeholder.style.display = 'flex';
+            
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('scan-result').textContent = 'Scanner stopped. Click "Start Scanner" to begin.';
+            document.getElementById('permission-help').style.display = 'none';
+        }
+
+        function processScannedCode(code) {
+            const resultDiv = document.getElementById('scan-result');
+            
+            // Check if the code matches our expected format
+            if (code.startsWith("UTTPHOTO2025-")) {
+                const id = code.replace("UTTPHOTO2025-", "");
+                const attendee = allRegistrations.find(reg => reg.id.toString() === id);
+                
+                if (attendee) {
+                    if (attendee.attended) {
+                        resultDiv.innerHTML = `<span style="color: #27ae60;">${attendee.name} (ID: ${attendee.id}) has already been marked as attended</span>`;
+                    } else {
+                        resultDiv.innerHTML = `Found: ${attendee.name} (ID: ${attendee.id})`;
+                        if (confirm(`Mark ${attendee.name} (ID: ${attendee.id}) as attended?`)) {
+                            database.ref('registrations/' + attendee.mobile).update({
+                                attended: true
+                            }).then(() => {
+                                resultDiv.innerHTML = `<span style="color: #27ae60;">Successfully marked ${attendee.name} as attended!</span>`;
+                            }).catch(error => {
+                                resultDiv.innerHTML = `<span style="color: #e74c3c;">Error: ${error.message}</span>`;
+                            });
+                        }
+                    }
+                } else {
+                    resultDiv.innerHTML = `<span style="color: #e74c3c;">No registration found with ID: ${id}</span>`;
+                }
+            } else {
+                resultDiv.innerHTML = `<span style="color: #e74c3c;">Invalid QR code. Please scan a valid registration QR code.</span>`;
+            }
+        }
+
+        // Don't start automatically - let user click the button
+        // This gives better permission request timing
+    </script>
+</body>
+</html>
